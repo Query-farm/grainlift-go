@@ -1,0 +1,34 @@
+name: Go SDK
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      contract_ref:
+        description: Grainlift revision containing the authoritative contract
+        default: main
+        required: true
+permissions:
+  contents: read
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - uses: actions/checkout@v4
+        with:
+          repository: Query-farm/grainlift
+          ref: ${{ inputs.contract_ref || 'main' }}
+          path: .upstream/grainlift
+      - name: Require authoritative contract parity
+        run: test -f .upstream/grainlift/validation/conformance/contract.json
+      - name: Format
+        run: test -z "$(gofmt -l *.go)"
+      - name: Race tests
+        env:
+          GRAINLIFT_CONTRACT: .upstream/grainlift/validation/conformance/contract.json
+        run: go test -race -count=1 ./...
+      - run: go vet ./...
