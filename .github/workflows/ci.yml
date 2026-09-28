@@ -26,9 +26,11 @@ jobs:
       - name: Require authoritative contract parity
         run: test -f .upstream/grainlift/validation/conformance/contract.json
       - name: Format
-        run: test -z "$(gofmt -l *.go)"
+        run: test -z "$(gofmt -l ./*.go)"
       - name: Race tests
         env:
           GRAINLIFT_CONTRACT: .upstream/grainlift/validation/conformance/contract.json
+          GRAINLIFT_REQUIRE_NETWORK: '1'
+          GRAINLIFT_REQUIRE_CANONICAL_HEADER: '1'
         run: go test -race -count=1 ./...
       - run: go vet ./...

@@ -1,10 +1,10 @@
 # Validation
 
-The Go SDK and example were tested on EC2 Linux ARM64 on 2026-09-26/27. The standalone SDK used Go 1.26.0; development workspaces used Go 1.26.8. All compilation, race tests, and native-driver tests ran remotely. These are correctness checks, not throughput measurements or sustained production soak results.
+The Go SDK and example were tested on EC2 Linux ARM64 on 2026-09-26/27. The standalone SDK used Go 1.26.0; development workspaces used Go 1.26.8. All compilation, race tests, and native-driver tests in the table below ran remotely. These are correctness checks, not throughput measurements or sustained production soak results. The module now declares published VGI-RPC Go v0.30.0; the historical table predates that dependency update.
 
 ## Dependency configurations
 
-The module declares published `vgi-rpc-go v0.28.0`. HTTP/HTTPS work with that dependency. TCP, mTLS, and Iroh intentionally fail closed because the required network-safe serving API has not been released.
+The earlier standalone module declared `vgi-rpc-go v0.28.0`. HTTP/HTTPS worked with that dependency. TCP, mTLS, and Iroh intentionally failed closed because the required network-safe serving API had not been released. That API is now in [v0.30.0](https://github.com/Query-farm/vgi-rpc-go/releases/tag/v0.30.0), which this module declares.
 
 The raw transport matrix used an explicit Go workspace with the [prepared upstream network-safety branch](https://github.com/Query-farm/vgi-rpc-go/tree/grainlift-network-safety), including parameter row-count and dynamic-header reflection fixes. No local module replacement is committed. SDK tests in that workspace required both `GRAINLIFT_REQUIRE_NETWORK=1` and `GRAINLIFT_REQUIRE_CANONICAL_HEADER=1`.
 
@@ -65,4 +65,4 @@ Earlier HTTP-only development evidence remains in [the initial results directory
 
 ## Remaining release gates
 
-Publish and integrate the reviewed upstream transport safety, decoder, and reflection fixes before distributing a raw-capable SDK. Tagged SDK/module releases, sustained real-backend workloads, deployment-specific certificate policies, and process-level resource isolation remain separate work. Repository publication and passing CI do not establish production readiness.
+The upstream transport safety, decoder, and reflection fixes are published in v0.30.0 and integrated in this module. The SDK's CI requires the network entrypoint and canonical header behavior rather than skipping raw tests. A fresh full native ADBC matrix against this declared tag, tagged SDK/module releases, sustained real-backend workloads, deployment-specific certificate policies, and process-level resource isolation remain separate work. Repository publication and passing CI do not establish production readiness.
