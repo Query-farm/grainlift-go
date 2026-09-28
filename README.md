@@ -4,7 +4,10 @@ Build Go workers that applications access through the ordinary [Grainlift ADBC d
 
 ## Status
 
-HTTP and HTTPS work with the declared dependency, [vgi-rpc-go v0.28.0](https://github.com/Query-farm/vgi-rpc-go). TCP, mTLS TCP, and Iroh adapters are implemented and tested, but **require an upstream transport release before they can be used with published dependencies**. They fail closed on v0.28.0.
+HTTP, HTTPS, loopback TCP, mTLS TCP, and Iroh use the declared, published
+[vgi-rpc-go v0.30.0](https://github.com/Query-farm/vgi-rpc-go/releases/tag/v0.30.0).
+The raw adapters require its network-safe serving entrypoint and fail closed
+with older VGI versions.
 
 This is an initial SDK. Backend capabilities depend on the implementation you supply; unsupported operations return ADBC `NOT_IMPLEMENTED`. Correctness and interoperability testing have passed, but sustained production workloads and real database backends still need deployment-specific validation. See [validation evidence](VALIDATION.md).
 
@@ -63,34 +66,23 @@ Construct `NewService(targets, DefaultLimits())`, supply an explicit authorizati
 | --- | --- | --- | --- |
 | HTTP | `HTTPHandler` | Your authenticated HTTP identity | Published dependency |
 | HTTPS | `HTTPHandler` with standard Go TLS | Verified server TLS plus HTTP authentication | Published dependency |
-| TCP | `ServeStreams`, mode `tcp` | Explicit shared local principal; numeric loopback only | Upstream release required |
-| mTLS TCP | `ServeStreams`, mode `mtls` | Verified client chain plus principal callback, or leaf certificate SHA-256 fingerprint | Upstream release required |
-| Iroh | `ServeStreams`, mode `iroh-bridge` | Allowlisted authenticated endpoint ID | Upstream release required |
+| TCP | `ServeStreams`, mode `tcp` | Explicit shared local principal; numeric loopback only | Published dependency |
+| mTLS TCP | `ServeStreams`, mode `mtls` | Verified client chain plus principal callback, or leaf certificate SHA-256 fingerprint | Published dependency |
+| Iroh | `ServeStreams`, mode `iroh-bridge` | Allowlisted authenticated endpoint ID | Published dependency |
 
 Sessions and child handles belong to an authentication domain and principal. Target authorization is separate from authentication. Server-configured database and connection options are authoritative; caller-supplied keys require explicit allowlists. Partition tokens additionally bind the target, expiry, and server secret.
 
 Iroh uses raw QUIC through a separately installed VGI Iroh bridge. Its upstream must be a private Unix socket in a non-symlink directory owned by the service UID with mode 0700; restrict the socket to mode 0600. The bridge and same-UID processes are trusted. The adapter is Unix-only.
 
-### Upstream release gate
+### Upstream transport contract
 
-VGI v0.28.0 has three pending integration fixes:
-
-- Dynamic producers without headers incorrectly advertise `has_header=true`.
-- Raw network adapters need `ServeNetworkWithContext`, which disables local shared-memory negotiation before any attachment or dispatch.
-- Nonempty parameter records need exactly-one-row validation before decoding, while empty-parameter methods retain their canonical empty representation.
-
-Prepared upstream fixes were tested in an explicitly selected development workspace. Neither module contains a local dependency replacement. To validate a reviewed checkout containing those fixes, from the workspace directory:
-
-```sh
-git clone --branch grainlift-network-safety \
-  https://github.com/Query-farm/vgi-rpc-go.git
-go work use ./vgi-rpc-go
-cd grainlift-go
-GRAINLIFT_REQUIRE_NETWORK=1 GRAINLIFT_REQUIRE_CANONICAL_HEADER=1 \
-  go test -race -count=1 ./...
-```
-
-With the published dependency, tests assert that raw hosting fails closed and explicitly skip raw interoperability cases. Do not enable the generic pipe-serving API as a workaround.
+VGI v0.30.0 provides `ServeNetworkWithContext`, which disables local
+shared-memory negotiation before any network attachment or dispatch. It also
+validates exactly one row in nonempty parameter records, retains the canonical
+empty representation for no-parameter methods, and advertises dynamic header
+schemas accurately. CI requires these capabilities; raw integration cases are
+no longer skipped with the declared dependency. The generic pipe-serving API
+must not be used for TCP, mTLS, or Iroh adapters.
 
 ## Limits and deployment
 
@@ -125,6 +117,8 @@ test -z "$(gofmt -l *.go)"
 Set `GRAINLIFT_CONTRACT=/path/to/grainlift/validation/conformance/contract.json` to require exact parity with the authoritative Rust-exported protocol fixture. Tests also inspect live VGI method schemas.
 
 The shared [native ADBC conformance suite](https://github.com/Query-farm/grainlift/tree/main/validation/conformance) exercises real driver-manager connections, lifecycle, ownership, replay, protocol rejection, and shutdown. [VALIDATION.md](VALIDATION.md) separates published-dependency results from patched-upstream results and explains the remaining release gates.
+
+The HTTP wire lifecycle tests use two independently authenticated clients. They exercise cross-principal session and partition ownership, 64 rounds of session/result/statement cleanup at the two-session limit, and idle expiry of an abandoned session with a live result while another client remains active. They use a synthetic backend; shared transaction visibility and writer contention require a stateful backend.
 
 ## Documentation and license
 
