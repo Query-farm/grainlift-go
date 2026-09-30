@@ -177,6 +177,12 @@ func (s *Service) register() {
 			if r == nil {
 				return nil, failure("not_found", "Unknown result")
 			}
+			if r.producer != nil {
+				if p.Sequence != 0 {
+					return nil, failure("invalid_arguments", "Producer results resume from continuation tokens")
+				}
+				return &vgirpc.StreamResult{OutputSchema: r.schema, State: &ResultCursor{p.SessionID, p.ResultID, 0, r.producer}}, nil
+			}
 			if p.Sequence < 0 || p.Sequence > r.sequence || p.Sequence < r.sequence-1 {
 				return nil, failure("invalid_state", "Invalid result sequence")
 			}
@@ -188,7 +194,7 @@ func (s *Service) register() {
 			} else {
 				schema = r.schema
 			}
-			return &vgirpc.StreamResult{OutputSchema: schema, State: &ResultCursor{p.SessionID, p.ResultID, p.Sequence}}, nil
+			return &vgirpc.StreamResult{OutputSchema: schema, State: &ResultCursor{p.SessionID, p.ResultID, p.Sequence, nil}}, nil
 		})
 	})
 	vgirpc.Unary(s.rpc, "commit", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (OkResponse, error) {

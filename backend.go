@@ -15,9 +15,14 @@ type Backend interface {
 }
 
 // QueryResult transfers Reader ownership to Service. Its schema remains stable.
+// Build a result whose state travels in continuation tokens with
+// NewProducerResult, which also sets Producer.
 type QueryResult struct {
 	Reader       array.RecordReader
 	RowsAffected *int64
+	// Producer, when set, is the serializable initial state behind Reader.
+	// Service resumes it from continuation tokens instead of keeping Reader.
+	Producer ResultProducer
 }
 
 // PartitionedResult contains backend opaque descriptors, wrapped by Service

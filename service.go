@@ -27,10 +27,18 @@ type Limits struct {
 	Sessions, Statements, Results, Partitions     int
 	RequestBytes, BatchBytes, BindBytes, SQLBytes int
 	IdleTimeout, LockTimeout                      time.Duration
+	// ProducerStateBytes bounds encoded ResultProducer state carried in a
+	// continuation token. It must not exceed RequestBytes/4.
+	ProducerStateBytes int
 }
 
 func DefaultLimits() Limits {
-	return Limits{64, 32, 32, 1024, 2 << 20, 1 << 20, 64 << 20, 64 << 10, 5 * time.Minute, 5 * time.Second}
+	return Limits{
+		Sessions: 64, Statements: 32, Results: 32, Partitions: 1024,
+		RequestBytes: 2 << 20, BatchBytes: 1 << 20, BindBytes: 64 << 20, SQLBytes: 64 << 10,
+		IdleTimeout: 5 * time.Minute, LockTimeout: 5 * time.Second,
+		ProducerStateBytes: 64 << 10,
+	}
 }
 
 // Target defines immutable server options and explicitly allowed caller keys.
@@ -65,6 +73,9 @@ type result struct {
 	last        arrow.RecordBatch
 	done        bool
 	statementID string
+	// producer is the encoded initial ResultProducer state; later states
+	// travel only in ResultCursor.
+	producer []byte
 }
 type binding struct {
 	id         string
@@ -93,10 +104,10 @@ type Service struct {
 }
 
 func NewService(targets map[string]Target, limits Limits) (*Service, error) {
-	if limits.Sessions <= 0 || limits.Statements <= 0 || limits.Results <= 0 || limits.Partitions <= 0 || limits.RequestBytes <= 0 || limits.BatchBytes <= 0 || limits.BindBytes <= 0 || limits.SQLBytes <= 0 || limits.IdleTimeout <= 0 || limits.LockTimeout <= 0 {
+	if limits.Sessions <= 0 || limits.Statements <= 0 || limits.Results <= 0 || limits.Partitions <= 0 || limits.RequestBytes <= 0 || limits.BatchBytes <= 0 || limits.BindBytes <= 0 || limits.SQLBytes <= 0 || limits.IdleTimeout <= 0 || limits.LockTimeout <= 0 || limits.ProducerStateBytes <= 0 {
 		return nil, failure("invalid_arguments", "Invalid service limits")
 	}
-	if limits.RequestBytes < 4096 || limits.BatchBytes > limits.RequestBytes/2 {
+	if limits.RequestBytes < 4096 || limits.BatchBytes > limits.RequestBytes/2 || limits.ProducerStateBytes > limits.RequestBytes/4 {
 		return nil, failure("invalid_arguments", "Response limit must allow batch framing")
 	}
 	s := &Service{sessions: map[string]*session{}, targets: map[string]Target{}, limits: limits, stop: make(chan struct{}), stopped: make(chan struct{})}
@@ -575,8 +586,20 @@ func (s *Service) addResult(ss *session, statementID string, q *QueryResult) (Ex
 	if len(data) > s.limits.BatchBytes {
 		return fail(failure("invalid_data", "Schema limit exceeded"))
 	}
+	var producer []byte
+	if q.Producer != nil {
+		if producer, e = s.encodeProducer(q.Producer); e != nil {
+			return fail(e)
+		}
+	}
+	schema := q.Reader.Schema()
+	if q.Producer != nil {
+		// Producer results resume from encoded state; the in-memory reader is unused.
+		q.Reader.Release()
+		q.Reader = nil
+	}
 	id := identifier()
-	ss.results[id] = &result{query: q, schema: q.Reader.Schema(), statementID: statementID}
+	ss.results[id] = &result{query: q, schema: schema, statementID: statementID, producer: producer}
 	if st := ss.statements[statementID]; st != nil {
 		st.resultID = id
 	}
@@ -607,9 +630,12 @@ func recordBytes(b arrow.RecordBatch) int64 {
 	return size
 }
 
+// ResultCursor is the read_result stream state. For ResultProducer results,
+// Producer holds the encoded producer, sealed into each HTTP continuation token.
 type ResultCursor struct {
 	SessionID, ResultID string
 	Sequence            int64
+	Producer            []byte
 }
 
 func init() { vgirpc.RegisterStateType(&ResultCursor{}); vgirpc.RegisterStateType(&BindCursor{}) }
@@ -620,8 +646,18 @@ func (c *ResultCursor) Produce(ctx context.Context, out *vgirpc.OutputCollector,
 		return e
 	}
 	defer unlock()
+	if c.Producer != nil {
+		b, e := s.nextProduced(ctx, ss, c)
+		if e != nil {
+			return e
+		}
+		if b == nil {
+			return out.Finish()
+		}
+		return out.Emit(b)
+	}
 	r := ss.results[c.ResultID]
-	if r == nil {
+	if r == nil || r.producer != nil {
 		return failure("not_found", "Unknown result")
 	}
 	if c.Sequence == r.sequence-1 && r.last != nil {

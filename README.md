@@ -13,22 +13,15 @@ This is an initial SDK. Backend capabilities depend on the implementation you su
 
 ## Quickstart
 
-Requires Go 1.26 or newer; the example below uses OpenSSL to generate a token. Start with the [companion synthetic worker](https://github.com/Query-farm/grainlift-hello-world-go), using an explicit workspace because the example does not yet pin a released SDK version:
+Requires Go 1.26 or newer. Start with the [hello-world worker](https://github.com/Query-farm/grainlift-hello-world-go), which serves three queries without a database:
 
 ```sh
-mkdir grainlift-go-workspace
-cd grainlift-go-workspace
-git clone https://github.com/Query-farm/grainlift-go.git
 git clone https://github.com/Query-farm/grainlift-hello-world-go.git
-go work init ./grainlift-go ./grainlift-hello-world-go
-
 cd grainlift-hello-world-go
-go build -o grainlift-hello-world-go .
-export GRAINLIFT_HELLO_TOKEN="$(openssl rand -hex 32)"
-./grainlift-hello-world-go --transport http --port 8080
+go run .
 ```
 
-Keep that terminal open. The worker prints its endpoint as one JSON line and stops on Enter, stdin EOF, or SIGINT/SIGTERM. Its README includes an ordinary ADBC client example and the other transport options.
+It accepts anonymous clients because it serves only public, read-only data. Its README shows how to query it from Haybarn/DuckDB SQL and from a Go ADBC client, and the other hosting options.
 
 To work on the SDK alone:
 
@@ -52,13 +45,21 @@ Implement `Backend.Open` to create a connection and `Connection.NewStatement` to
 | Substrait and ingestion | Backend hooks; ingestion uses standard statement options and execute-update |
 | Errors | ADBC status, SQLSTATE, vendor code, and ordered binary details |
 
-The interfaces are in [backend.go](backend.go); service configuration is in [service.go](service.go). A complete small backend is in the [example repository](https://github.com/Query-farm/grainlift-hello-world-go/blob/main/main.go).
+The interfaces are in [backend.go](backend.go); service configuration is in [service.go](service.go). A complete small backend is in the [example repository](https://github.com/Query-farm/grainlift-hello-world-go/blob/main/hello/hello.go).
 
 `Statement.Execute` transfers ownership of an Arrow `array.RecordReader` to the SDK. Results stay server-side and are pulled one batch at a time, with at most one replay batch retained. Readers are released on exhaustion, close, error, cancellation, expiry, and shutdown.
+
+### Result producers
+
+A result can instead carry its state in the continuation token. Implement `ResultProducer` on a pointer to a struct whose exported fields are the complete resumable state; `Produce` returns the next batch and advances the state, or a nil batch at the end. Register the type with `RegisterResultProducer` in an `init` function and return `NewProducerResult(schema, producer)`.
+
+The service gob-encodes the initial state at execution. Over HTTP each fetch decodes the state from the sealed VGI continuation token, produces one batch, validates its schema and size, and seals the advanced state into the next token, so no reader or replay batch stays in server memory. A retried fetch re-produces the previous batch from its token; older tokens fail with `INVALID_ARGUMENT`. Only registered types are decoded, and encoded state is bounded by `Limits.ProducerStateBytes` (64 KiB by default). Raw transports carry the same encoded state in memory. `EncodeResultProducer` and `DecodeResultProducer` let tests check that a producer resumes identically. Keep sockets, files and database cursors in a reader instead.
 
 `Bind` and `BindStream` lend their batch or reader to the callback; retain it if the backend needs it afterward. Parameter batches remain until query replacement or statement close. Ordinary callbacks serialize per connection. `Cancel` callbacks may run concurrently and must be thread-safe and nonblocking; context cancellation is cooperative.
 
 Construct `NewService(targets, DefaultLimits())`, supply an explicit authorization callback for every target, and host `service.HTTPHandler(authenticate)` with a configured `http.Server`. Stop the listener before calling `Service.Close`.
+
+For development, [`cli.Run`](cli/cli.go) hosts one target on loopback from a worker's own `main`, with `--host http|mtls`, `--port`, `--auth token|anonymous` and the mTLS certificate flags. HTTP authenticates the bearer token in `GRAINLIFT_TOKEN`, generating and printing one when it is unset in token mode.
 
 ## Transports and authentication
 
@@ -69,6 +70,8 @@ Construct `NewService(targets, DefaultLimits())`, supply an explicit authorizati
 | TCP | `ServeStreams`, mode `tcp` | Explicit shared local principal; numeric loopback only | Published dependency |
 | mTLS TCP | `ServeStreams`, mode `mtls` | Verified client chain plus principal callback, or leaf certificate SHA-256 fingerprint | Published dependency |
 | Iroh | `ServeStreams`, mode `iroh-bridge` | Allowlisted authenticated endpoint ID | Published dependency |
+
+`HTTPAuthenticator(tokens, anonymousPrincipal)` builds an HTTP authenticator from bearer tokens mapped to principals. Anonymous access is opt-in: with a non-empty `anonymousPrincipal`, requests without an `Authorization` header act as that shared principal in a separate authentication domain, so its handles and continuation tokens cannot be used by a token principal of the same name. A presented token that does not match is rejected, never downgraded to anonymous, and the anonymous principal must differ from every token principal. Enable it only for public, read-only targets.
 
 Sessions and child handles belong to an authentication domain and principal. Target authorization is separate from authentication. Server-configured database and connection options are authoritative; caller-supplied keys require explicit allowlists. Partition tokens additionally bind the target, expiry, and server secret.
 
@@ -93,6 +96,7 @@ must not be used for TCP, mTLS, or Iroh adapters.
 | Partition descriptors | 1,024 |
 | HTTP request / response body | 2 MiB |
 | Arrow batch / schema | 1 MiB |
+| Encoded result producer state | 64 KiB |
 | Binding input and retained buffers | 64 MiB cumulative |
 | SQL | 64 KiB |
 | Idle handle expiry | 5 minutes |
@@ -111,7 +115,7 @@ Only structured `*Error` diagnostics are returned verbatim; other backend errors
 ```sh
 go test -race -count=1 ./...
 go vet ./...
-test -z "$(gofmt -l *.go)"
+test -z "$(gofmt -l .)"
 ```
 
 Set `GRAINLIFT_CONTRACT=/path/to/grainlift/validation/conformance/contract.json` to require exact parity with the authoritative Rust-exported protocol fixture. Tests also inspect live VGI method schemas.

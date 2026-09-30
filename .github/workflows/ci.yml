@@ -26,7 +26,7 @@ jobs:
       - name: Require authoritative contract parity
         run: test -f .upstream/grainlift/validation/conformance/contract.json
       - name: Format
-        run: test -z "$(gofmt -l ./*.go)"
+        run: test -z "$(gofmt -l .)"
       - name: Race tests
         env:
           GRAINLIFT_CONTRACT: .upstream/grainlift/validation/conformance/contract.json
