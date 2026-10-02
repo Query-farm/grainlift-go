@@ -115,8 +115,8 @@ type ServiceOptions struct {
 	// through presigned download URLs in an S3-compatible bucket. It applies
 	// to HTTPHandler only; raw streams have no request limit to get around.
 	// With it, bound batches may be as large as its MaxUploadBytes, and
-	// Limits.BatchBytes may exceed RequestBytes/2 (result rows larger than an
-	// HTTP request), up to half of its MaxUploadBytes.
+	// Limits.BatchBytes may exceed what fits a response (result rows larger
+	// than an HTTP request), up to half of its MaxUploadBytes.
 	ExternalStorage *ExternalStorageConfig
 }
 
@@ -137,8 +137,10 @@ func NewServiceWithOptions(targets map[string]Target, limits Limits, options Ser
 			return nil, e
 		}
 	}
-	// A batch travels inline unless storage can carry what does not fit.
-	maxBatch := limits.RequestBytes / 2
+	// A result batch travels inline, in a response no larger than a request,
+	// next to its continuation state (sealed, so allow twice its bound) and
+	// IPC framing, unless storage can carry what does not fit.
+	maxBatch := limits.RequestBytes - 2*limits.ProducerStateBytes - min(responseFramingBytes, limits.RequestBytes/16)
 	if storage != nil {
 		maxBatch = int(min(storage.maxUploadBytes/2, int64(^uint(0)>>1)))
 	}
@@ -691,6 +693,11 @@ func recordBytes(b arrow.RecordBatch) int64 {
 	}
 	return size
 }
+
+// responseFramingBytes reserves room in a response for IPC framing, the
+// schema message and result metadata around one batch (a sixteenth of
+// smaller requests).
+const responseFramingBytes = 64 << 10
 
 // bindBatchBytes bounds one bound batch. A client splits parameters to fit
 // a request (it knows only the advertised request limit), so any batch that

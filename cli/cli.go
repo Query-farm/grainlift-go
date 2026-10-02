@@ -143,7 +143,7 @@ func parse(args []string, options Options, stderr io.Writer) (config, error) {
 	flags.StringVar(&c.clientURI, "client-uri", "", "mTLS: authorized client certificate URI SAN")
 	defaults := grainlift.DefaultLimits()
 	flags.IntVar(&c.requestBytes, "max-request-bytes", defaults.RequestBytes, "HTTP: largest request and inline response in `bytes`")
-	flags.IntVar(&c.batchBytes, "max-batch-bytes", defaults.BatchBytes, "largest bound or result Arrow batch in `bytes` (above half of --max-request-bytes needs --storage-endpoint)")
+	flags.IntVar(&c.batchBytes, "max-batch-bytes", defaults.BatchBytes, "largest result Arrow batch in `bytes` (more than fits a response of --max-request-bytes needs --storage-endpoint)")
 	flags.StringVar(&c.storage.Endpoint, "storage-endpoint", "", "HTTP: S3-compatible `URL` for large requests and results, e.g. https://<account>.r2.cloudflarestorage.com (credentials from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)")
 	flags.StringVar(&c.storage.Bucket, "storage-bucket", "", "storage: `bucket` name")
 	flags.StringVar(&c.storage.Region, "storage-region", "auto", "storage: signing `region`")

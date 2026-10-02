@@ -113,7 +113,8 @@ Only structured `*Error` diagnostics are returned verbatim; other backend errors
 ### Large requests and results: object storage
 
 Over HTTP a request is limited to `Limits.RequestBytes`, and every result
-batch to `Limits.BatchBytes`, at most half a request. A bound batch may be as
+batch to `Limits.BatchBytes`, which must fit a response (a request, less twice
+`ProducerStateBytes` and up to 64 KiB of framing). A bound batch may be as
 large as a request: clients split parameters to fit the advertised request
 limit, which is all they know. With
 `ServiceOptions.ExternalStorage` the HTTP handler uses an S3-compatible bucket
@@ -126,8 +127,8 @@ limit, which is all they know. With
 - A result batch of at least `ThresholdBytes` is stored in the bucket and the
   client is sent a URL to fetch it.
 - A bound batch may then be as large as `MaxUploadBytes`, and `BatchBytes`
-  may exceed half a request (up to half of `MaxUploadBytes`), so rows larger
-  than an HTTP request work in both directions.
+  may exceed a response (up to half of `MaxUploadBytes`), so rows larger than
+  an HTTP request work in both directions.
 
 ```go
 limits := grainlift.DefaultLimits()

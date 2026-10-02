@@ -85,3 +85,20 @@ func TestHTTPBindAcceptsBatchesThatFitARequest(t *testing.T) {
 		t.Fatal("bound data changed")
 	}
 }
+
+// A result batch may fill a response, less its continuation state and
+// framing: a 3 MB row fits a 4 MiB response.
+func TestResultBatchesMayFillAResponse(t *testing.T) {
+	limits := DefaultLimits()
+	limits.RequestBytes = 4 << 20
+	limits.BatchBytes = 3 << 20
+	svc, e := NewService(nil, limits)
+	if e != nil {
+		t.Fatal(e)
+	}
+	svc.Close()
+	limits.BatchBytes = limits.RequestBytes - limits.ProducerStateBytes
+	if _, e := NewService(nil, limits); e == nil {
+		t.Fatal("accepted result batches that leave no room for continuation state")
+	}
+}
