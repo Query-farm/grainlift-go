@@ -63,7 +63,7 @@ func (c *BindCursor) Exchange(ctx context.Context, input arrow.RecordBatch, out 
 		if c.Sequence != b.sequence || b.finished {
 			return ok(failure("invalid_state", "Invalid binding sequence"))
 		}
-		if len(raw)+b.bytes > s.limits.BindBytes || len(raw) > s.limits.BatchBytes {
+		if len(raw)+b.bytes > s.limits.BindBytes || len(raw) > s.bindBatchBytes() {
 			return fail(failure("invalid_arguments", "Binding limit exceeded"))
 		}
 		if finish {
@@ -93,7 +93,7 @@ func (c *BindCursor) Exchange(ctx context.Context, input arrow.RecordBatch, out 
 				return fail(failure("invalid_data", "Binding requires complete IPC framing"))
 			}
 			source := bytes.NewReader(raw)
-			reader, e := ipc.NewReader(source, ipc.WithAllocator(&boundedAllocator{limit: s.limits.BatchBytes * 2}))
+			reader, e := ipc.NewReader(source, ipc.WithAllocator(&boundedAllocator{limit: s.bindBatchBytes() * 2}))
 			if e != nil {
 				return fail(failure("invalid_data", "Invalid Arrow binding"))
 			}
@@ -103,7 +103,7 @@ func (c *BindCursor) Exchange(ctx context.Context, input arrow.RecordBatch, out 
 			}
 			batch := reader.RecordBatch()
 			batch.Retain()
-			if reader.Next() || reader.Err() != nil || source.Len() != 0 || recordBytes(batch) > int64(s.limits.BatchBytes) {
+			if reader.Next() || reader.Err() != nil || source.Len() != 0 || recordBytes(batch) > int64(s.bindBatchBytes()) {
 				batch.Release()
 				return fail(failure("invalid_data", "Invalid binding batch"))
 			}

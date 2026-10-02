@@ -64,15 +64,16 @@ type config struct {
 // port); --auth token or anonymous (default Options.Auth); and, for mTLS,
 // --tls-cert, --tls-key, --client-ca and --client-uri.
 //
-// HTTP accepts requests up to --max-request-bytes (default 2 MiB) and
-// batches up to --max-batch-bytes (default 1 MiB). With --storage-endpoint and
+// HTTP accepts requests up to --max-request-bytes (default 2 MiB), bound
+// batches as large as a request, and result batches up to --max-batch-bytes
+// (default 1 MiB). With --storage-endpoint and
 // --storage-bucket it sends larger requests and results through an
 // S3-compatible bucket (HTTP only; see grainlift.ExternalStorageConfig):
 // --storage-region (default auto), --storage-prefix, --storage-virtual-hosted,
 // --storage-url-ttl, --storage-threshold-bytes and
 // --storage-max-upload-bytes; credentials come from AWS_ACCESS_KEY_ID and
-// AWS_SECRET_ACCESS_KEY. Raise --max-batch-bytes to carry rows larger than a
-// request.
+// AWS_SECRET_ACCESS_KEY. Raise --max-batch-bytes to return result rows larger
+// than a request.
 //
 // HTTP authenticates the bearer token in GRAINLIFT_TOKEN as the "developer"
 // principal; when it is unset in token mode, a random token is generated and

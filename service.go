@@ -16,6 +16,7 @@ import (
 	"github.com/Query-farm/vgi-rpc-go/vgirpc"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 	"net/http"
 	"strings"
 	"sync"
@@ -113,8 +114,9 @@ type ServiceOptions struct {
 	// through presigned upload URLs and result batches over its threshold
 	// through presigned download URLs in an S3-compatible bucket. It applies
 	// to HTTPHandler only; raw streams have no request limit to get around.
-	// With it, Limits.BatchBytes may exceed RequestBytes/2 (rows larger than
-	// an HTTP request), up to half of its MaxUploadBytes.
+	// With it, bound batches may be as large as its MaxUploadBytes, and
+	// Limits.BatchBytes may exceed RequestBytes/2 (result rows larger than an
+	// HTTP request), up to half of its MaxUploadBytes.
 	ExternalStorage *ExternalStorageConfig
 }
 
@@ -661,6 +663,9 @@ func (s *Service) addResult(ss *session, statementID string, q *QueryResult) (Ex
 }
 func recordBytes(b arrow.RecordBatch) int64 {
 	var size int64
+	// Buffers decoded from IPC are slices of one message body: count each
+	// underlying allocation once, not once per buffer that shares it.
+	seen := map[*memory.Buffer]bool{}
 	var add func(arrow.ArrayData)
 	add = func(d arrow.ArrayData) {
 		for _, b := range d.Buffers() {
@@ -668,7 +673,10 @@ func recordBytes(b arrow.RecordBatch) int64 {
 				for b.Parent() != nil {
 					b = b.Parent()
 				}
-				size += int64(b.Cap())
+				if !seen[b] {
+					seen[b] = true
+					size += int64(b.Cap())
+				}
 			}
 		}
 		for _, c := range d.Children() {
@@ -682,6 +690,18 @@ func recordBytes(b arrow.RecordBatch) int64 {
 		add(c.Data())
 	}
 	return size
+}
+
+// bindBatchBytes bounds one bound batch. A client splits parameters to fit
+// a request (it knows only the advertised request limit), so any batch that
+// fits a request is accepted even when BatchBytes, which bounds results, is
+// smaller; with object storage, so is any batch up to the upload limit.
+func (s *Service) bindBatchBytes() int {
+	n := max(s.limits.BatchBytes, s.limits.RequestBytes)
+	if s.storage != nil {
+		n = max(n, int(min(s.storage.maxUploadBytes, int64(^uint(0)>>1))))
+	}
+	return n
 }
 
 // ResultCursor is the read_result stream state. For ResultProducer results,

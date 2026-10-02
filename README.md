@@ -112,8 +112,10 @@ Only structured `*Error` diagnostics are returned verbatim; other backend errors
 
 ### Large requests and results: object storage
 
-Over HTTP a request is limited to `Limits.RequestBytes`, and every bound or
-result batch to `Limits.BatchBytes`, at most half a request. With
+Over HTTP a request is limited to `Limits.RequestBytes`, and every result
+batch to `Limits.BatchBytes`, at most half a request. A bound batch may be as
+large as a request: clients split parameters to fit the advertised request
+limit, which is all they know. With
 `ServiceOptions.ExternalStorage` the HTTP handler uses an S3-compatible bucket
 (AWS S3, Cloudflare R2, MinIO) for
 [VGI-RPC external locations](https://vgi-rpc.query.farm/):
@@ -123,8 +125,9 @@ result batch to `Limits.BatchBytes`, at most half a request. With
   a pointer, up to `MaxUploadBytes`.
 - A result batch of at least `ThresholdBytes` is stored in the bucket and the
   client is sent a URL to fetch it.
-- `BatchBytes` may then exceed half a request (up to half of
-  `MaxUploadBytes`), so rows larger than an HTTP request work.
+- A bound batch may then be as large as `MaxUploadBytes`, and `BatchBytes`
+  may exceed half a request (up to half of `MaxUploadBytes`), so rows larger
+  than an HTTP request work in both directions.
 
 ```go
 limits := grainlift.DefaultLimits()
