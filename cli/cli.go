@@ -53,6 +53,8 @@ type config struct {
 	host, auth                           string
 	port                                 int
 	tlsCert, tlsKey, clientCA, clientURI string
+	requestBytes, batchBytes             int
+	storage                              grainlift.ExternalStorageConfig
 }
 
 // Run serves one target on loopback until ctx is done or the process receives
@@ -61,6 +63,16 @@ type config struct {
 // Flags: --host http (default) or mtls; --port (default 8080; 0 picks a free
 // port); --auth token or anonymous (default Options.Auth); and, for mTLS,
 // --tls-cert, --tls-key, --client-ca and --client-uri.
+//
+// HTTP accepts requests up to --max-request-bytes (default 2 MiB) and
+// batches up to --max-batch-bytes (default 1 MiB). With --storage-endpoint and
+// --storage-bucket it sends larger requests and results through an
+// S3-compatible bucket (HTTP only; see grainlift.ExternalStorageConfig):
+// --storage-region (default auto), --storage-prefix, --storage-virtual-hosted,
+// --storage-url-ttl, --storage-threshold-bytes and
+// --storage-max-upload-bytes; credentials come from AWS_ACCESS_KEY_ID and
+// AWS_SECRET_ACCESS_KEY. Raise --max-batch-bytes to carry rows larger than a
+// request.
 //
 // HTTP authenticates the bearer token in GRAINLIFT_TOKEN as the "developer"
 // principal; when it is unset in token mode, a random token is generated and
@@ -92,7 +104,13 @@ func Run(ctx context.Context, name string, target grainlift.Target, options Opti
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	svc, e := grainlift.NewService(map[string]grainlift.Target{name: target}, grainlift.DefaultLimits())
+	limits := grainlift.DefaultLimits()
+	limits.RequestBytes, limits.BatchBytes = c.requestBytes, c.batchBytes
+	var serviceOptions grainlift.ServiceOptions
+	if c.storage.Endpoint != "" {
+		serviceOptions.ExternalStorage = &c.storage
+	}
+	svc, e := grainlift.NewServiceWithOptions(map[string]grainlift.Target{name: target}, limits, serviceOptions)
 	if e != nil {
 		return e
 	}
@@ -122,6 +140,17 @@ func parse(args []string, options Options, stderr io.Writer) (config, error) {
 	flags.StringVar(&c.tlsKey, "tls-key", "", "mTLS: server private key (PEM `file`)")
 	flags.StringVar(&c.clientCA, "client-ca", "", "mTLS: CA that issues client certificates (PEM `file`)")
 	flags.StringVar(&c.clientURI, "client-uri", "", "mTLS: authorized client certificate URI SAN")
+	defaults := grainlift.DefaultLimits()
+	flags.IntVar(&c.requestBytes, "max-request-bytes", defaults.RequestBytes, "HTTP: largest request and inline response in `bytes`")
+	flags.IntVar(&c.batchBytes, "max-batch-bytes", defaults.BatchBytes, "largest bound or result Arrow batch in `bytes` (above half of --max-request-bytes needs --storage-endpoint)")
+	flags.StringVar(&c.storage.Endpoint, "storage-endpoint", "", "HTTP: S3-compatible `URL` for large requests and results, e.g. https://<account>.r2.cloudflarestorage.com (credentials from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)")
+	flags.StringVar(&c.storage.Bucket, "storage-bucket", "", "storage: `bucket` name")
+	flags.StringVar(&c.storage.Region, "storage-region", "auto", "storage: signing `region`")
+	flags.StringVar(&c.storage.Prefix, "storage-prefix", "", "storage: object key `prefix`")
+	flags.BoolVar(&c.storage.VirtualHostedStyle, "storage-virtual-hosted", false, "storage: address objects as https://<bucket>.<endpoint host>/")
+	flags.DurationVar(&c.storage.URLTTL, "storage-url-ttl", 15*time.Minute, "storage: how long presigned URLs stay valid")
+	flags.Int64Var(&c.storage.ThresholdBytes, "storage-threshold-bytes", 1<<20, "storage: result batches of at least this many `bytes` go to the bucket")
+	flags.Int64Var(&c.storage.MaxUploadBytes, "storage-max-upload-bytes", 256<<20, "storage: largest request a client may upload, in `bytes`")
 	flags.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: %s [flags]\n", program)
 		if options.Description != "" {
@@ -133,6 +162,8 @@ func parse(args []string, options Options, stderr io.Writer) (config, error) {
 	if e := flags.Parse(args); e != nil {
 		return c, e
 	}
+	set := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	invalid := func(message string) (config, error) {
 		fmt.Fprintf(stderr, "%s: %s\n", program, message)
 		flags.Usage()
@@ -149,6 +180,19 @@ func parse(args []string, options Options, stderr io.Writer) (config, error) {
 		return invalid("--port must be between 0 and 65535")
 	case c.host == "mtls" && (c.tlsCert == "" || c.tlsKey == "" || c.clientCA == "" || c.clientURI == ""):
 		return invalid("--host mtls requires --tls-cert, --tls-key, --client-ca and --client-uri")
+	case c.requestBytes <= 0 || c.batchBytes <= 0:
+		return invalid("--max-request-bytes and --max-batch-bytes must be positive")
+	case (c.storage.Endpoint == "") != (c.storage.Bucket == ""):
+		return invalid("--storage-endpoint and --storage-bucket go together")
+	case c.storage.Endpoint != "" && c.host != "http":
+		return invalid("--storage-endpoint applies to --host http only")
+	}
+	if c.storage.Endpoint == "" {
+		for _, name := range []string{"storage-region", "storage-prefix", "storage-virtual-hosted", "storage-url-ttl", "storage-threshold-bytes", "storage-max-upload-bytes"} {
+			if set[name] {
+				return invalid("--" + name + " requires --storage-endpoint")
+			}
+		}
 	}
 	return c, nil
 }
@@ -199,6 +243,9 @@ func serveHTTP(ctx context.Context, svc *grainlift.Service, name string, c confi
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
 	fmt.Fprintf(stdout, "Grainlift target %q listening on http://%s\n", name, listener.Addr())
+	if c.storage.Endpoint != "" {
+		fmt.Fprintf(stdout, "Large requests and results go through bucket %q at %s\n", c.storage.Bucket, c.storage.Endpoint)
+	}
 	select {
 	case e := <-served:
 		return e

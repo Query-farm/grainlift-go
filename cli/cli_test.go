@@ -14,6 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	grainlift "github.com/Query-farm/grainlift-go"
+	"github.com/Query-farm/vgi-rpc-go/vgirpc"
 	"math/big"
 	"net"
 	"net/http"
@@ -100,6 +101,11 @@ func TestFlagValidation(t *testing.T) {
 		{"--host", "mtls", "--tls-cert", "cert.pem"},
 		{"extra"},
 		{"--unknown"},
+		{"--storage-endpoint", "https://s3.example"},
+		{"--storage-bucket", "b"},
+		{"--storage-prefix", "p/"},
+		{"--max-request-bytes", "0"},
+		{"--host", "mtls", "--tls-cert", "c", "--tls-key", "k", "--client-ca", "a", "--client-uri", "u", "--storage-endpoint", "https://s3.example", "--storage-bucket", "b"},
 	} {
 		stderr := &buffer{}
 		if e := Run(context.Background(), "hello", target, Options{Args: args, Stderr: stderr}); e == nil || !strings.Contains(stderr.String(), "Usage:") {
@@ -113,7 +119,7 @@ func TestFlagValidation(t *testing.T) {
 	if e := Run(context.Background(), "hello", target, Options{Args: []string{"--help"}, Description: "Hello service", Stderr: stderr}); e != nil {
 		t.Fatal(e)
 	}
-	for _, text := range []string{"Hello service", "-host", "-port", "-auth", "-client-uri", "(default 8080)"} {
+	for _, text := range []string{"Hello service", "-host", "-port", "-auth", "-client-uri", "(default 8080)", "-storage-endpoint", "-max-batch-bytes"} {
 		if !strings.Contains(stderr.String(), text) {
 			t.Errorf("help lacks %q", text)
 		}
@@ -250,5 +256,28 @@ func TestMTLSAuthorizesClientURI(t *testing.T) {
 	}
 	if accepted(client(t, clientCA, "spiffe://example.org/other")) || accepted(client(t, otherCA, "spiffe://example.org/client")) {
 		t.Fatal("unauthorized client accepted")
+	}
+}
+
+func TestHTTPStorageAdvertisesUploadURLs(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "test-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
+	address, stdout, _ := start(t, "anonymous",
+		"--max-request-bytes", "262144", "--max-batch-bytes", "4194304",
+		"--storage-endpoint", "https://acct.r2.cloudflarestorage.com", "--storage-bucket", "grainlift-test")
+	if !strings.Contains(stdout.String(), `bucket "grainlift-test"`) {
+		t.Fatalf("no storage status line: %s", stdout.String())
+	}
+	client, e := vgirpc.NewHttpClient("http://"+address, vgirpc.WithClientProtocol(grainlift.ProtocolName), vgirpc.WithClientProtocolVersion(grainlift.ProtocolVersion))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer client.Close()
+	caps, e := client.DiscoverCapabilities(context.Background())
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !caps.UploadURLSupport || caps.MaxRequestBytes != 262144 || caps.MaxUploadBytes != 256<<20 {
+		t.Fatalf("capabilities %+v", caps)
 	}
 }

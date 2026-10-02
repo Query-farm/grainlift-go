@@ -79,14 +79,14 @@ func runStatement[R any](s *Service, ctx context.Context, call *vgirpc.CallConte
 	})
 }
 func ok(e error) (OkResponse, error) { return OkResponse{e == nil}, e }
-func (s *Service) register() {
-	namedUnary(s.rpc, "open_connection", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[OpenConnectionRequest]) (SessionResponse, error) {
+func (s *Service) register(rpc *vgirpc.Server) {
+	namedUnary(rpc, "open_connection", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[OpenConnectionRequest]) (SessionResponse, error) {
 		return s.open(ctx, c, p.Request)
 	})
-	vgirpc.Unary(s.rpc, "close_connection", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (OkResponse, error) {
+	vgirpc.Unary(rpc, "close_connection", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (OkResponse, error) {
 		return runSession(s, ctx, c, p.SessionID, func(ss *session) (OkResponse, error) { return ok(s.closeSession(p.SessionID, ss)) })
 	})
-	vgirpc.Unary(s.rpc, "new_statement", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (StatementResponse, error) {
+	vgirpc.Unary(rpc, "new_statement", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (StatementResponse, error) {
 		return runSession(s, ctx, c, p.SessionID, func(ss *session) (StatementResponse, error) {
 			if len(ss.statements) >= s.limits.Statements {
 				return StatementResponse{}, failure("invalid_state", "Statement limit reached")
@@ -105,7 +105,7 @@ func (s *Service) register() {
 			return StatementResponse{p.SessionID, id}, nil
 		})
 	})
-	vgirpc.Unary(s.rpc, "close_statement", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (OkResponse, error) {
+	vgirpc.Unary(rpc, "close_statement", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (OkResponse, error) {
 		return runStatement(s, ctx, c, p.SessionID, p.StatementID, func(ss *session, st *statement) (OkResponse, error) {
 			s.closeResult(ss, st.resultID)
 			ss.guard.Lock()
@@ -116,7 +116,7 @@ func (s *Service) register() {
 			return ok(e)
 		})
 	})
-	vgirpc.Unary(s.rpc, "set_sql_query", func(ctx context.Context, c *vgirpc.CallContext, p sqlParams) (OkResponse, error) {
+	vgirpc.Unary(rpc, "set_sql_query", func(ctx context.Context, c *vgirpc.CallContext, p sqlParams) (OkResponse, error) {
 		return runStatement(s, ctx, c, p.SessionID, p.StatementID, func(ss *session, st *statement) (OkResponse, error) {
 			if len(p.SQL) > s.limits.SQLBytes || !validText(p.SQL) {
 				return ok(failure("invalid_arguments", "Invalid SQL size or text"))
@@ -129,7 +129,7 @@ func (s *Service) register() {
 			return ok(e)
 		})
 	})
-	vgirpc.Unary(s.rpc, "set_substrait_plan", func(ctx context.Context, c *vgirpc.CallContext, p planParams) (OkResponse, error) {
+	vgirpc.Unary(rpc, "set_substrait_plan", func(ctx context.Context, c *vgirpc.CallContext, p planParams) (OkResponse, error) {
 		return runStatement(s, ctx, c, p.SessionID, p.StatementID, func(ss *session, st *statement) (OkResponse, error) {
 			if len(p.Payload) > s.limits.RequestBytes {
 				return ok(failure("invalid_arguments", "Plan limit exceeded"))
@@ -142,7 +142,7 @@ func (s *Service) register() {
 			return ok(e)
 		})
 	})
-	vgirpc.Unary(s.rpc, "execute", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (ExecuteResponse, error) {
+	vgirpc.Unary(rpc, "execute", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (ExecuteResponse, error) {
 		return runStatement(s, ctx, c, p.SessionID, p.StatementID, func(ss *session, st *statement) (ExecuteResponse, error) {
 			if st.binding != nil && !st.binding.finished {
 				return ExecuteResponse{}, failure("invalid_state", "Binding upload is incomplete")
@@ -155,7 +155,7 @@ func (s *Service) register() {
 			return s.addResult(ss, p.StatementID, q)
 		})
 	})
-	vgirpc.Unary(s.rpc, "execute_update", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (UpdateResponse, error) {
+	vgirpc.Unary(rpc, "execute_update", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (UpdateResponse, error) {
 		return runStatement(s, ctx, c, p.SessionID, p.StatementID, func(ss *session, st *statement) (UpdateResponse, error) {
 			if st.binding != nil && !st.binding.finished {
 				return UpdateResponse{}, failure("invalid_state", "Binding upload is incomplete")
@@ -168,10 +168,10 @@ func (s *Service) register() {
 			return UpdateResponse{n}, e
 		})
 	})
-	vgirpc.Unary(s.rpc, "close_result", func(ctx context.Context, c *vgirpc.CallContext, p resultParams) (OkResponse, error) {
+	vgirpc.Unary(rpc, "close_result", func(ctx context.Context, c *vgirpc.CallContext, p resultParams) (OkResponse, error) {
 		return runSession(s, ctx, c, p.SessionID, func(ss *session) (OkResponse, error) { s.closeResult(ss, p.ResultID); return ok(nil) })
 	})
-	vgirpc.DynamicProducerWithHeader(s.rpc, "read_result", nil, func(ctx context.Context, c *vgirpc.CallContext, p readParams) (*vgirpc.StreamResult, error) {
+	vgirpc.DynamicProducerWithHeader(rpc, "read_result", nil, func(ctx context.Context, c *vgirpc.CallContext, p readParams) (*vgirpc.StreamResult, error) {
 		return runSession(s, ctx, c, p.SessionID, func(ss *session) (*vgirpc.StreamResult, error) {
 			r := ss.results[p.ResultID]
 			if r == nil {
@@ -197,22 +197,22 @@ func (s *Service) register() {
 			return &vgirpc.StreamResult{OutputSchema: schema, State: &ResultCursor{p.SessionID, p.ResultID, p.Sequence, nil}}, nil
 		})
 	})
-	vgirpc.Unary(s.rpc, "commit", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (OkResponse, error) {
+	vgirpc.Unary(rpc, "commit", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (OkResponse, error) {
 		return runSession(s, ctx, c, p.SessionID, func(ss *session) (OkResponse, error) { return ok(ss.conn.Commit(ctx)) })
 	})
-	vgirpc.Unary(s.rpc, "rollback", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (OkResponse, error) {
+	vgirpc.Unary(rpc, "rollback", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (OkResponse, error) {
 		return runSession(s, ctx, c, p.SessionID, func(ss *session) (OkResponse, error) { return ok(ss.conn.Rollback(ctx)) })
 	})
-	vgirpc.Unary(s.rpc, "cancel_connection", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (OkResponse, error) {
+	vgirpc.Unary(rpc, "cancel_connection", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (OkResponse, error) {
 		return s.cancel(ctx, c, p.SessionID, "")
 	})
-	vgirpc.Unary(s.rpc, "prepare", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (OkResponse, error) {
+	vgirpc.Unary(rpc, "prepare", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (OkResponse, error) {
 		return runStatement(s, ctx, c, p.SessionID, p.StatementID, func(ss *session, st *statement) (OkResponse, error) { return ok(st.backend.Prepare(ctx)) })
 	})
-	vgirpc.Unary(s.rpc, "cancel_statement", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (OkResponse, error) {
+	vgirpc.Unary(rpc, "cancel_statement", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (OkResponse, error) {
 		return s.cancel(ctx, c, p.SessionID, p.StatementID)
 	})
-	vgirpc.Unary(s.rpc, "execute_schema", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (SchemaResponse, error) {
+	vgirpc.Unary(rpc, "execute_schema", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (SchemaResponse, error) {
 		return runStatement(s, ctx, c, p.SessionID, p.StatementID, func(ss *session, st *statement) (SchemaResponse, error) {
 			s.closeResult(ss, st.resultID)
 			schema, e := st.backend.ExecuteSchema(ctx)
@@ -222,7 +222,7 @@ func (s *Service) register() {
 			return s.schemaResponse(schema)
 		})
 	})
-	vgirpc.Unary(s.rpc, "get_parameter_schema", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (SchemaResponse, error) {
+	vgirpc.Unary(rpc, "get_parameter_schema", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (SchemaResponse, error) {
 		return runStatement(s, ctx, c, p.SessionID, p.StatementID, func(ss *session, st *statement) (SchemaResponse, error) {
 			schema, e := st.backend.GetParameterSchema(ctx)
 			if e != nil {
@@ -231,7 +231,7 @@ func (s *Service) register() {
 			return s.schemaResponse(schema)
 		})
 	})
-	namedUnary(s.rpc, "get_info", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[GetInfoRequest]) (ExecuteResponse, error) {
+	namedUnary(rpc, "get_info", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[GetInfoRequest]) (ExecuteResponse, error) {
 		return runSession(s, ctx, c, p.Request.SessionID, func(ss *session) (ExecuteResponse, error) {
 			if e := validateRequest(p.Request); e != nil {
 				return ExecuteResponse{}, e
@@ -243,7 +243,7 @@ func (s *Service) register() {
 			return s.addResult(ss, "", q)
 		})
 	})
-	namedUnary(s.rpc, "get_objects", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[GetObjectsRequest]) (ExecuteResponse, error) {
+	namedUnary(rpc, "get_objects", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[GetObjectsRequest]) (ExecuteResponse, error) {
 		return runSession(s, ctx, c, p.Request.SessionID, func(ss *session) (ExecuteResponse, error) {
 			if e := validateRequest(p.Request); e != nil {
 				return ExecuteResponse{}, e
@@ -255,7 +255,7 @@ func (s *Service) register() {
 			return s.addResult(ss, "", q)
 		})
 	})
-	namedUnary(s.rpc, "get_statistics", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[GetStatisticsRequest]) (ExecuteResponse, error) {
+	namedUnary(rpc, "get_statistics", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[GetStatisticsRequest]) (ExecuteResponse, error) {
 		return runSession(s, ctx, c, p.Request.SessionID, func(ss *session) (ExecuteResponse, error) {
 			if e := validateRequest(p.Request); e != nil {
 				return ExecuteResponse{}, e
@@ -267,7 +267,7 @@ func (s *Service) register() {
 			return s.addResult(ss, "", q)
 		})
 	})
-	vgirpc.Unary(s.rpc, "get_table_types", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (ExecuteResponse, error) {
+	vgirpc.Unary(rpc, "get_table_types", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (ExecuteResponse, error) {
 		return runSession(s, ctx, c, p.SessionID, func(ss *session) (ExecuteResponse, error) {
 			q, e := ss.conn.GetTableTypes(ctx)
 			if e != nil {
@@ -276,7 +276,7 @@ func (s *Service) register() {
 			return s.addResult(ss, "", q)
 		})
 	})
-	vgirpc.Unary(s.rpc, "get_statistic_names", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (ExecuteResponse, error) {
+	vgirpc.Unary(rpc, "get_statistic_names", func(ctx context.Context, c *vgirpc.CallContext, p sessionParams) (ExecuteResponse, error) {
 		return runSession(s, ctx, c, p.SessionID, func(ss *session) (ExecuteResponse, error) {
 			q, e := ss.conn.GetStatisticNames(ctx)
 			if e != nil {
@@ -286,7 +286,7 @@ func (s *Service) register() {
 		})
 	})
 
-	namedUnary(s.rpc, "get_table_schema", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[GetTableSchemaRequest]) (SchemaResponse, error) {
+	namedUnary(rpc, "get_table_schema", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[GetTableSchemaRequest]) (SchemaResponse, error) {
 		return runSession(s, ctx, c, p.Request.SessionID, func(ss *session) (SchemaResponse, error) {
 			if e := validateRequest(p.Request); e != nil {
 				return SchemaResponse{}, e
@@ -298,7 +298,7 @@ func (s *Service) register() {
 			return s.schemaResponse(schema)
 		})
 	})
-	namedUnary(s.rpc, "set_connection_option", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[SetConnectionOptionRequest]) (OkResponse, error) {
+	namedUnary(rpc, "set_connection_option", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[SetConnectionOptionRequest]) (OkResponse, error) {
 		return runSession(s, ctx, c, p.Request.SessionID, func(ss *session) (OkResponse, error) {
 			r := p.Request
 			if !validKey(r.Key) || r.Value.validate() != nil {
@@ -313,7 +313,7 @@ func (s *Service) register() {
 			return ok(ss.conn.SetOption(ctx, r.Key, r.Value))
 		})
 	})
-	vgirpc.Unary(s.rpc, "get_connection_option", func(ctx context.Context, c *vgirpc.CallContext, p connectionOptionParams) (ValueResponse, error) {
+	vgirpc.Unary(rpc, "get_connection_option", func(ctx context.Context, c *vgirpc.CallContext, p connectionOptionParams) (ValueResponse, error) {
 		return runSession(s, ctx, c, p.SessionID, func(ss *session) (ValueResponse, error) {
 			if !validKey(p.Key) || !validKind(p.ValueType) {
 				return ValueResponse{}, failure("invalid_arguments", "Invalid option")
@@ -322,7 +322,7 @@ func (s *Service) register() {
 			return optionResponse(v, p.ValueType, e)
 		})
 	})
-	namedUnary(s.rpc, "set_statement_option", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[SetStatementOptionRequest]) (OkResponse, error) {
+	namedUnary(rpc, "set_statement_option", func(ctx context.Context, c *vgirpc.CallContext, p requestParams[SetStatementOptionRequest]) (OkResponse, error) {
 		r := p.Request
 		return runStatement(s, ctx, c, r.SessionID, r.StatementID, func(ss *session, st *statement) (OkResponse, error) {
 			if !validKey(r.Key) || r.Value.validate() != nil {
@@ -334,7 +334,7 @@ func (s *Service) register() {
 			return ok(st.backend.SetOption(ctx, r.Key, r.Value))
 		})
 	})
-	vgirpc.Unary(s.rpc, "get_statement_option", func(ctx context.Context, c *vgirpc.CallContext, p statementOptionParams) (ValueResponse, error) {
+	vgirpc.Unary(rpc, "get_statement_option", func(ctx context.Context, c *vgirpc.CallContext, p statementOptionParams) (ValueResponse, error) {
 		return runStatement(s, ctx, c, p.SessionID, p.StatementID, func(ss *session, st *statement) (ValueResponse, error) {
 			if !validKey(p.Key) || !validKind(p.ValueType) {
 				return ValueResponse{}, failure("invalid_arguments", "Invalid option")
@@ -343,7 +343,7 @@ func (s *Service) register() {
 			return optionResponse(v, p.ValueType, e)
 		})
 	})
-	vgirpc.Unary(s.rpc, "execute_partitions", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (PartitionsResponse, error) {
+	vgirpc.Unary(rpc, "execute_partitions", func(ctx context.Context, c *vgirpc.CallContext, p statementParams) (PartitionsResponse, error) {
 		return runStatement(s, ctx, c, p.SessionID, p.StatementID, func(ss *session, st *statement) (PartitionsResponse, error) {
 			s.closeResult(ss, st.resultID)
 			v, e := st.backend.ExecutePartitions(ctx)
@@ -372,7 +372,7 @@ func (s *Service) register() {
 			return PartitionsResponse{v.RowsAffected, schema.SchemaIPC, parts}, nil
 		})
 	})
-	vgirpc.Unary(s.rpc, "read_partition", func(ctx context.Context, c *vgirpc.CallContext, p partitionParams) (ExecuteResponse, error) {
+	vgirpc.Unary(rpc, "read_partition", func(ctx context.Context, c *vgirpc.CallContext, p partitionParams) (ExecuteResponse, error) {
 		return runSession(s, ctx, c, p.SessionID, func(ss *session) (ExecuteResponse, error) {
 			raw, e := s.openPartition(ss.owner, ss.targetName, p.Payload)
 			if e != nil {
@@ -391,7 +391,7 @@ func (s *Service) register() {
 			name = "bind_stream"
 		}
 		isStream := stream
-		vgirpc.Exchange(s.rpc, name, okSchema, bindSchema, func(ctx context.Context, c *vgirpc.CallContext, p bindParams) (*vgirpc.StreamResult, error) {
+		vgirpc.Exchange(rpc, name, okSchema, bindSchema, func(ctx context.Context, c *vgirpc.CallContext, p bindParams) (*vgirpc.StreamResult, error) {
 			return s.startBind(ctx, c, p, isStream)
 		})
 	}

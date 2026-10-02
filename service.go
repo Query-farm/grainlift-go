@@ -101,16 +101,49 @@ type Service struct {
 	stopped  chan struct{}
 	closed   bool
 	rpc      *vgirpc.Server
+	// httpRPC serves HTTP; it is rpc unless external storage is configured,
+	// which only HTTP uses.
+	httpRPC *vgirpc.Server
+	storage *externalStorage
 }
 
+// ServiceOptions configures optional Service features.
+type ServiceOptions struct {
+	// ExternalStorage, when set, sends HTTP requests over Limits.RequestBytes
+	// through presigned upload URLs and result batches over its threshold
+	// through presigned download URLs in an S3-compatible bucket. It applies
+	// to HTTPHandler only; raw streams have no request limit to get around.
+	// With it, Limits.BatchBytes may exceed RequestBytes/2 (rows larger than
+	// an HTTP request), up to half of its MaxUploadBytes.
+	ExternalStorage *ExternalStorageConfig
+}
+
+// NewService creates a Service without optional features.
 func NewService(targets map[string]Target, limits Limits) (*Service, error) {
+	return NewServiceWithOptions(targets, limits, ServiceOptions{})
+}
+
+// NewServiceWithOptions creates a Service with optional features.
+func NewServiceWithOptions(targets map[string]Target, limits Limits, options ServiceOptions) (*Service, error) {
 	if limits.Sessions <= 0 || limits.Statements <= 0 || limits.Results <= 0 || limits.Partitions <= 0 || limits.RequestBytes <= 0 || limits.BatchBytes <= 0 || limits.BindBytes <= 0 || limits.SQLBytes <= 0 || limits.IdleTimeout <= 0 || limits.LockTimeout <= 0 || limits.ProducerStateBytes <= 0 {
 		return nil, failure("invalid_arguments", "Invalid service limits")
 	}
-	if limits.RequestBytes < 4096 || limits.BatchBytes > limits.RequestBytes/2 || limits.ProducerStateBytes > limits.RequestBytes/4 {
+	var storage *externalStorage
+	if options.ExternalStorage != nil {
+		var e error
+		if storage, e = newExternalStorage(*options.ExternalStorage); e != nil {
+			return nil, e
+		}
+	}
+	// A batch travels inline unless storage can carry what does not fit.
+	maxBatch := limits.RequestBytes / 2
+	if storage != nil {
+		maxBatch = int(min(storage.maxUploadBytes/2, int64(^uint(0)>>1)))
+	}
+	if limits.RequestBytes < 4096 || limits.BatchBytes > maxBatch || limits.ProducerStateBytes > limits.RequestBytes/4 {
 		return nil, failure("invalid_arguments", "Response limit must allow batch framing")
 	}
-	s := &Service{sessions: map[string]*session{}, targets: map[string]Target{}, limits: limits, stop: make(chan struct{}), stopped: make(chan struct{})}
+	s := &Service{sessions: map[string]*session{}, targets: map[string]Target{}, limits: limits, stop: make(chan struct{}), stopped: make(chan struct{}), storage: storage}
 	if _, err := rand.Read(s.secret[:]); err != nil {
 		return nil, err
 	}
@@ -131,17 +164,33 @@ func NewService(targets map[string]Target, limits Limits) (*Service, error) {
 		}
 		s.targets[name] = t
 	}
-	s.rpc = vgirpc.NewServer()
-	s.rpc.SetServiceName(ProtocolName)
-	s.rpc.SetProtocolVersion(ProtocolVersion)
-	s.rpc.SetImplementation(s)
-	s.rpc.SetDispatchHook(validationHook{})
-	s.register()
-	if e := vgirpc.RegisterReflection(s.rpc); e != nil {
+	var e error
+	if s.rpc, e = s.newRPC(); e != nil {
 		return nil, e
+	}
+	s.httpRPC = s.rpc
+	if storage != nil {
+		if s.httpRPC, e = s.newRPC(); e != nil {
+			return nil, e
+		}
+		s.httpRPC.SetExternalLocation(storage.location)
 	}
 	go s.reap()
 	return s, nil
+}
+
+// newRPC builds a VGI server dispatching to s.
+func (s *Service) newRPC() (*vgirpc.Server, error) {
+	rpc := vgirpc.NewServer()
+	rpc.SetServiceName(ProtocolName)
+	rpc.SetProtocolVersion(ProtocolVersion)
+	rpc.SetImplementation(s)
+	rpc.SetDispatchHook(validationHook{})
+	s.register(rpc)
+	if e := vgirpc.RegisterReflection(rpc); e != nil {
+		return nil, e
+	}
+	return rpc, nil
 }
 func cloneAllowed(m map[string]bool) map[string]bool {
 	n := map[string]bool{}
@@ -513,13 +562,18 @@ func (s *Service) cancel(ctx context.Context, c *vgirpc.CallContext, sid, stid s
 }
 func okResponseError(e error) (OkResponse, error) { return OkResponse{}, e }
 
-// HTTPHandler creates the authenticated, bounded VGI HTTP transport.
+// HTTPHandler creates the authenticated, bounded VGI HTTP transport, using
+// ServiceOptions.ExternalStorage when configured.
 func (s *Service) HTTPHandler(auth vgirpc.AuthenticateFunc) http.Handler {
-	h := vgirpc.NewHttpServer(s.rpc)
+	h := vgirpc.NewHttpServer(s.httpRPC)
 	h.SetProtocolName(ProtocolName)
 	h.SetAuthenticate(auth)
 	h.SetMaxRequestBytes(int64(s.limits.RequestBytes))
 	h.SetMaxResponseBytes(int64(s.limits.RequestBytes))
+	if s.storage != nil {
+		h.SetUploadURLProvider(s.storage.uploads)
+		h.SetMaxUploadBytes(s.storage.maxUploadBytes)
+	}
 	slots := make(chan struct{}, s.limits.Sessions*2)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {

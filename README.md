@@ -110,6 +110,46 @@ Sessions, transactions, and live cursors are process-local and require affinity.
 
 Only structured `*Error` diagnostics are returned verbatim; other backend errors are redacted. Never put credentials, SQL values, or other secrets in client-visible diagnostics or logs.
 
+### Large requests and results: object storage
+
+Over HTTP a request is limited to `Limits.RequestBytes`, and every bound or
+result batch to `Limits.BatchBytes`, at most half a request. With
+`ServiceOptions.ExternalStorage` the HTTP handler uses an S3-compatible bucket
+(AWS S3, Cloudflare R2, MinIO) for
+[VGI-RPC external locations](https://vgi-rpc.query.farm/):
+
+- A client whose request is over the limit asks for an upload URL
+  (`POST /__upload_url__/init`), PUTs the request to the bucket, and sends only
+  a pointer, up to `MaxUploadBytes`.
+- A result batch of at least `ThresholdBytes` is stored in the bucket and the
+  client is sent a URL to fetch it.
+- `BatchBytes` may then exceed half a request (up to half of
+  `MaxUploadBytes`), so rows larger than an HTTP request work.
+
+```go
+limits := grainlift.DefaultLimits()
+limits.BatchBytes = 64 << 20
+svc, err := grainlift.NewServiceWithOptions(targets, limits, grainlift.ServiceOptions{
+	ExternalStorage: &grainlift.ExternalStorageConfig{
+		Endpoint: "https://<account-id>.r2.cloudflarestorage.com", // or https://s3.<region>.amazonaws.com
+		Bucket:   "grainlift-exchange",
+		Prefix:   "grainlift/",
+		// Region "auto"; credentials from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY;
+		// URLTTL 15m; ThresholdBytes 1 MiB; MaxUploadBytes 256 MiB.
+	},
+})
+```
+
+The service presigns the URLs itself (AWS Signature Version 4, no AWS SDK), so
+clients need no storage credentials, and it fetches only objects in its own
+bucket. Raw streams (`ServeStreams`) are unaffected: they have no request limit.
+The service never deletes objects; give the bucket a lifecycle rule that
+expires them. Browser clients PUT and GET the bucket directly, so it also needs
+a CORS rule allowing `PUT` and `GET` (with `Content-Type` and
+`Content-Encoding`) from the page's origin. The `cli` host takes the same
+settings as `--storage-endpoint`, `--storage-bucket` and related flags, with
+`--max-request-bytes` and `--max-batch-bytes`.
+
 ## Testing
 
 ```sh
