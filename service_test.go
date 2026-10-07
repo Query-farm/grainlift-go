@@ -30,7 +30,11 @@ type featureConnection struct {
 	commits, rollbacks int
 	options            map[string]OptionValue
 	closed             bool
+	statistics         *bool
 }
+
+func (c *featureConnection) StatisticsSupported() *bool     { return c.statistics }
+func (c *featureConnection) StatisticNamesSupported() *bool { return c.statistics }
 
 func (c *featureConnection) NewStatement(context.Context) (Statement, error) { return c.st, nil }
 func (c *featureConnection) Commit(context.Context) error                    { c.commits++; return nil }
@@ -299,6 +303,17 @@ func TestFullOptionalBackendDispatch(t *testing.T) {
 		callTest[OkResponse](t, c, "close_result", resultParams{p.SessionID, reply.ResultID})
 	}
 	callTest[SchemaResponse](t, c, "get_table_schema", GetTableSchemaRequest{SessionID: p.SessionID, TableName: "table"})
+}
+
+func TestSessionStatisticsCapabilities(t *testing.T) {
+	_, client, connection, _ := setupFeature(t)
+	for _, supported := range []*bool{nil, ptr(false), ptr(true)} {
+		connection.statistics = supported
+		response := callTest[SessionResponse](t, client, "open_connection", OpenConnectionRequest{Target: "default"})
+		if !reflect.DeepEqual(response.StatisticsSupported, supported) || !reflect.DeepEqual(response.StatisticNamesSupported, supported) {
+			t.Fatalf("capabilities did not round trip: %+v", response)
+		}
+	}
 }
 func TestBindingAndIngestionDispatch(t *testing.T) {
 	for _, stream := range []bool{false, true} {

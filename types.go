@@ -11,7 +11,7 @@ import (
 )
 
 const ProtocolName = "org.queryfarm.Grainlift.v1"
-const ProtocolVersion = "0.4.0"
+const ProtocolVersion = "0.5.0"
 
 func (OpenConnectionRequest) VgiRpcParamsSchema() *arrow.Schema {
 	return arrow.NewSchema([]arrow.Field{{Name: "request", Type: arrow.BinaryTypes.Binary}}, nil)
@@ -156,7 +156,9 @@ type OkResponse struct {
 	Ok bool `vgirpc:"ok" arrow:"ok"`
 }
 type SessionResponse struct {
-	SessionID string `vgirpc:"session_id" arrow:"session_id"`
+	SessionID               string `vgirpc:"session_id" arrow:"session_id"`
+	StatisticsSupported     *bool  `vgirpc:"statistics_supported" arrow:"statistics_supported"`
+	StatisticNamesSupported *bool  `vgirpc:"statistic_names_supported" arrow:"statistic_names_supported"`
 }
 type StatementResponse struct {
 	SessionID   string `vgirpc:"session_id" arrow:"session_id"`

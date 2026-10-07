@@ -1,6 +1,6 @@
 # Grainlift Go
 
-Build Go workers that applications access through the ordinary [Grainlift ADBC driver](https://github.com/Query-farm/grainlift). This toolkit implements the Grainlift 0.4.0 server contract: 31 typed methods, authenticated handles, pull-based Arrow results, and backend interfaces for the full ADBC operation surface.
+Build Go workers that applications access through the ordinary [Grainlift ADBC driver](https://github.com/Query-farm/grainlift). This toolkit implements the Grainlift 0.5.0 server contract: 31 typed methods, authenticated handles, pull-based Arrow results, and backend interfaces for the full ADBC operation surface.
 
 ## Status
 
@@ -34,6 +34,12 @@ go test -race -count=1 ./...
 ## Implementing a backend
 
 Implement `Backend.Open` to create a connection and `Connection.NewStatement` to create independent statements. Embed `UnimplementedConnection` and `UnimplementedStatement` to inherit explicit `NOT_IMPLEMENTED` responses, then override the operations your backend supports.
+
+Implement `StatisticsCapabilities` to declare statistics support per connection.
+Its `StatisticsSupported()` and `StatisticNamesSupported()` methods return
+`*bool`: nil means unknown, false lets clients return `NOT_IMPLEMENTED` locally,
+and true keeps remote dispatch. The flags are returned by `open_connection`;
+table schemas remain fresh. Upgrade clients and servers together for protocol 0.5.0.
 
 | Backend surface | SDK behavior |
 | --- | --- |

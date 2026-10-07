@@ -56,6 +56,16 @@ type Connection interface {
 // UnimplementedConnection returns explicit ADBC NOT_IMPLEMENTED for optional features.
 type UnimplementedConnection struct{}
 
+// StatisticsCapabilities optionally declares support for an opened connection.
+// Nil means unknown. False lets clients answer NOT_IMPLEMENTED locally.
+type StatisticsCapabilities interface {
+	StatisticsSupported() *bool
+	StatisticNamesSupported() *bool
+}
+
+func (UnimplementedConnection) StatisticsSupported() *bool     { return nil }
+func (UnimplementedConnection) StatisticNamesSupported() *bool { return nil }
+
 func (UnimplementedConnection) NewStatement(ctx context.Context) (Statement, error) {
 	return nil, unsupported()
 }

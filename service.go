@@ -398,7 +398,12 @@ func (s *Service) open(ctx context.Context, call *vgirpc.CallContext, p OpenConn
 	ss.guard.Lock()
 	ss.conn = conn
 	ss.guard.Unlock()
-	return SessionResponse{id}, nil
+	response := SessionResponse{SessionID: id}
+	if capabilities, ok := conn.(StatisticsCapabilities); ok {
+		response.StatisticsSupported = capabilities.StatisticsSupported()
+		response.StatisticNamesSupported = capabilities.StatisticNamesSupported()
+	}
+	return response, nil
 }
 func (s *Service) release(id string, ss *session) {
 	s.mu.Lock()
